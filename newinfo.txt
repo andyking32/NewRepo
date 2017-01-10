@@ -1,0 +1,98 @@
+#I "../../FAKE/tools"
+#I "../../FSharp.Data/lib/net40"
+
+#I "../../packages/FAKE/tools"
+#I "../../packages/FSharp.Data/lib/net40"
+
+#r "FakeLib.dll"
+
+open Fake
+open System
+open System.Data.SqlClient
+open System.IO
+open System.Text
+
+
+type SqlFileDescription = {
+    Name : string
+    Content : string
+    Version : int
+    Env : string
+    Comment : string
+}
+
+
+// Build params
+let commandLineArgs = Environment.GetCommandLineArgs()
+let getBuildParam (name: string) = 
+    let lowerCaseName = name.ToLower()
+    Seq.find (fun (arg: string) -> arg.ToLower().Contains(lowerCaseName + "=")) commandLineArgs |> toLower |> splitStr(lowerCaseName + "=") |> List.last
+let environment = getBuildParam "environment"
+let migrationScriptsFolder = getBuildParam "migrationScriptsFolder"
+let connectionString = getBuildParam "connectionString"
+
+
+// Compare two strings case insensitively
+let caseInsensitiveStringEquals string1 string2 =
+    String.Equals(string1, string2, StringComparison.CurrentCultureIgnoreCase)
+
+
+// Get the latest version from the database
+let getCurrentVersion connectionString =
+    let sql =
+        "IF EXISTS(SELECT * FROM sysobjects WHERE NAME = 'Version') SELECT MAX(Number) FROM [dbo].[Version] ELSE SELECT -1"
+    use connection = new SqlConnection(connectionString)
+    use command = new SqlCommand(sql, connection)
+    connection.Open()
+    command.ExecuteScalar() |> Convert.ToInt32
+
+
+// Update version in the database
+let updateVersion name version = 
+    sprintf "INSERT INTO [dbo].[Version] SELECT %d, '%s', GETDATE()" version name
+
+
+// Load all scripts from the db scripts folder and create a record of each containing filename, file content, version and environment
+let getScripts scriptsFolder = 
+    !! (scriptsFolder </> "*.sql")
+    |> Seq.map (fun scriptName ->
+        let fn = FileInfo(scriptName)
+        match fn.Name.Split('.') with
+        | [|version; env; comment; _|] -> { Version = int version; Env = env; Name = fn.Name; Content = File.ReadAllText(scriptName); Comment = comment }
+        | _ -> failwithf "Invalid file format for %s" scriptName)
+
+
+// Filters the scripts by valid file names and then environment and version. Finally it sorts them by version.
+let filterAndSortSqlScripts environment currentVersion scripts = 
+    scripts
+    |> Seq.filter (fun { Env = env } -> caseInsensitiveStringEquals env "all" || caseInsensitiveStringEquals env environment)
+    |> Seq.filter (fun { Version = version } -> version > currentVersion)
+    |> Seq.sortBy (fun { Version = version } -> version)
+    
+
+// Generates the content of the change script
+let createDiffSqlScript environment currentVersion scriptsFolder =
+    getScripts scriptsFolder 
+    |> filterAndSortSqlScripts environment currentVersion
+    |> Seq.collect (fun { Comment = comment; Content = content; Version = version } -> 
+                    [ content; "GO"; updateVersion comment version; "GO"; ])
+
+
+// Calculates the current version and gets creates a script with all versions since up to latest for the environment
+let createMigrationScript environment connectionString scriptsFolder = 
+    let currentVersion = getCurrentVersion connectionString
+    let scriptLines = createDiffSqlScript environment currentVersion scriptsFolder  |> Seq.toList
+    let scriptsFileName = currentDirectory </> "Migrations.sql"
+    
+    if not (Seq.isEmpty scriptLines) then
+        let transactionScriptLines = "SET XACT_ABORT On; begin transaction;" :: scriptLines @ ["commit transaction;"]
+        File.AppendAllLines(scriptsFileName, transactionScriptLines, Encoding.UTF8)
+    
+
+// Declare the targets
+Target "CreateMigrationScript" (fun _ ->
+    createMigrationScript environment connectionString migrationScriptsFolder)
+
+
+// Set the default target
+RunTargetOrDefault "CreateMigrationScript"
