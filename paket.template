@@ -1,0 +1,21 @@
+﻿type						file
+id							Me.DevOps.Deploy
+version						1.0.0
+title						Me.DevOps.Deploy
+authors						My comp
+owners						My comp
+description					Package required to process continuous deployment deploys
+copyright					Copyright © My comp 2016
+requireLicenseAcceptance	false
+releaseNotes
+	3.2.0
+	Reverting last changes as tfs environment variables are not available on remote server.
+	3.1.0
+	Use TFS environment variables to reduce parameter list length in release definitions
+	and decouple settings.json from where it is stored.
+files
+	tools\*.* ==> tools
+dependencies
+	FAKE ~> 4
+	FSharp.Data ~> 2
+	Microsoft.Web.Xdt ~> 2
