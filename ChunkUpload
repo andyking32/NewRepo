@@ -1,0 +1,160 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Diagnostics;
+using System.IO;
+using System.IO.MemoryMappedFiles;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Upload
+{
+    public class FileUploadService : IFileUploadService
+    {
+        private readonly ILogger _logger;
+        private readonly IDocuSignUploadApi _docuSignUploadApi;
+        private readonly int _maxChunkSizeInBytes = int.Parse(ConfigurationManager.AppSettings["fileUploadChunkSize"]);
+        private readonly int _maxConcurrentTransfers = int.Parse(ConfigurationManager.AppSettings["fileUploadBatchSize"]);
+        private readonly SHA256 _sha256Hasher = SHA256.Create();
+        private Guid _firstPartUploadId = default(Guid);
+        private CancellationTokenSource _tokenSource;
+
+
+        public FileUploadService(IDocuSignUploadApi docuSignUploadApi, ILogger logger)
+        {
+            _logger = logger;
+            _docuSignUploadApi = docuSignUploadApi;
+        }
+
+        public async Task<Guid> UploadFile(string filePath)
+        {
+            _logger.Info($"Begin processing of file {filePath}");
+            var stopWatch = Stopwatch.StartNew();
+
+            var result = await ProcessFile(filePath);
+
+            stopWatch.Stop();
+            _logger.Info($"Total time to upload {filePath} was {stopWatch.Elapsed.Minutes} minutes {stopWatch.Elapsed.Seconds} seconds");
+
+            return result ? _firstPartUploadId : Guid.Empty;
+        }
+
+        private async Task<bool> ProcessFile(string filePath)
+        {
+            var length = new FileInfo(filePath).Length;
+            var chunks = Partitioner.Create(_maxChunkSizeInBytes, length, _maxChunkSizeInBytes).GetOrderableDynamicPartitions();
+            var workItems = new ConcurrentQueue<KeyValuePair<long, Tuple<long, long>>>(chunks);
+            _tokenSource = new CancellationTokenSource();
+            
+            using (var file = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open, "Upload.tmp", length, MemoryMappedFileAccess.Read))
+            {
+                if (!await UploadFirstChunk(file).ConfigureAwait(false))
+                    return false;
+
+                Func<IEnumerable<Task<bool>>> workers = () => Enumerable.Range(1, _maxConcurrentTransfers)
+                                                                        .Select(_ => ProcessChunks(workItems, file));
+
+                try
+                {
+                    var workersTasks = await Task.Factory.StartNew(workers, _tokenSource.Token).ConfigureAwait(false);
+                    var workersTasksResults = await Task.WhenAll(workersTasks).ConfigureAwait(false);
+                    var successful = workersTasksResults.All(_ => _) && await CommitUpload(filePath).ConfigureAwait(false);
+                    return successful;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+        }
+
+        private async Task<bool> UploadFirstChunk(MemoryMappedFile file)
+        {
+            using (var stream = file.CreateViewStream(0, _maxChunkSizeInBytes, MemoryMappedFileAccess.Read))
+            {
+                var partBytes = new byte[_maxChunkSizeInBytes];
+                stream.Read(partBytes, 0, _maxChunkSizeInBytes);
+                _sha256Hasher.TransformBlock(partBytes, 0, partBytes.Length, partBytes, 0);
+
+                try
+                {
+                    _firstPartUploadId = await Retry.Do(_logger, _docuSignUploadApi.InitiateChunkedUpload(partBytes, _tokenSource.Token), _tokenSource.Token).ConfigureAwait(false);
+                    _logger.Info($"firstPartUploadId = {_firstPartUploadId}");
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex);
+                    return false;
+                }
+            }
+        }
+
+        private async Task<bool> ProcessChunks(ConcurrentQueue<KeyValuePair<long, Tuple<long, long>>> chunks, MemoryMappedFile file)
+        {
+            KeyValuePair<long, Tuple<long, long>> workItem;
+            while (chunks.TryDequeue(out workItem))
+            {
+                var success = await UploadChunk(workItem.Value.Item1, workItem.Value.Item2 - workItem.Value.Item1, workItem.Key, file).ConfigureAwait(false);
+                return success;
+            }
+
+            return true;
+        }
+
+        private async Task<bool> UploadChunk(long offset, long size, long segment, MemoryMappedFile file)
+        {
+            var partSequence = (int)segment + 1;
+
+            using (var stream = file.CreateViewStream(offset, size, MemoryMappedFileAccess.Read))
+            {
+                var partBytes = new byte[size];
+                stream.Read(partBytes, 0, (int)size);
+                _sha256Hasher.TransformBlock(partBytes, 0, partBytes.Length, partBytes, 0);
+
+                try
+                {
+                    await Retry.Do(_logger, _docuSignUploadApi.AddPartToChunkedUpload(_firstPartUploadId, partSequence, partBytes, _tokenSource.Token), _tokenSource.Token).ConfigureAwait(false);
+
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    ActivateCancellationToken();
+                    _logger.Error(ex);
+                    return false;
+                }
+            }
+        }
+
+        private void ActivateCancellationToken()
+        {
+            if (!_tokenSource.IsCancellationRequested)
+            {
+                _tokenSource.Cancel();
+            }
+        }
+
+        private async Task<bool> CommitUpload(string filePath)
+        {
+            _sha256Hasher.TransformFinalBlock(new byte[] { }, 0, 0);
+            var uploadFileChecksum = BitConverter.ToString(_sha256Hasher.Hash).Replace("-", "");
+
+            _logger.Info($"CommitUpload started for {filePath}");
+            try
+            {
+                await Retry.Do(_logger, _docuSignUploadApi.CommitUpload(_firstPartUploadId, uploadFileChecksum, _tokenSource.Token), _tokenSource.Token).ConfigureAwait(false);
+                _logger.Info($"CommitUpload ended for {filePath}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex);
+                return false;
+            }
+        }
+    }
+}
