@@ -1,0 +1,17 @@
+{
+  "applications": [
+    {
+      "app1": {
+        "solutionName": "app",
+        "unitTestFilePattern": "**.UnitTests\\*.UnitTests.dll",
+        "openCoverIncludeFilter": "+[*.*]*",
+        "openCoverExcludeFilter": "-[*.*.UnitTests]*-[*.Testing.Utilities]*",
+        "artifactFolders": [
+          "packages/Deploy.*/tools/*.*",
+          "Database/Scripts",
+          "$buildDir/API/_PublishedWebsites/API"
+        ]
+      }
+    }
+  ]
+}
