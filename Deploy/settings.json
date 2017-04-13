@@ -1,0 +1,24 @@
+{
+  "environments": {
+    "dev": {
+      "generateDbScript": true,
+      "prinicpalServerName": "mServer",
+      "dbScriptOutputPath": "d:\\DatabaseScripts\\",
+      "connectionString": "myCS"
+    },
+    "uat": {
+      "generateDbScript": true,
+      "prinicpalServerName": "myServer",
+      "dbScriptOutputPath": "d:\\DatabaseScripts\\",
+      "connectionString": "myCS"
+    }
+  },
+  "applications": [
+    {
+      "myApp": {
+        "appPool": "MyAppApi",
+        "versionTable": "MyAppVersion"
+      }
+    }
+  ]
+}
