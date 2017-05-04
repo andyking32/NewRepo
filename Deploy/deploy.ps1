@@ -4,6 +4,18 @@ param(
 	[bool]$deployDatabase = $(Throw "Please specify if database deployment is required"))
 
 
+function GetProcess($processId)
+{
+            $result = $null
+            try{
+                        $result = Get-Process -Id $processId
+            }catch{
+                        Write-Verbose ("Cannot find the process with id " + $processId.ToString() + ".")
+                        Break
+            }
+            return $result;
+}
+
 function XmlDocTransform($xml, $xdt)
 {
 	$xmldoc = New-Object Microsoft.Web.XmlTransform.XmlTransformableDocument;
@@ -44,6 +56,45 @@ Try
 	$bytes = [System.IO.File]::ReadAllBytes($xmlTransformPath)
 	[System.Reflection.Assembly]::Load($bytes)
 
+	
+	# Stop services
+	write-verbose "Stopping and uninstalling service(s)"
+	# foreach ($project in $settings.services)
+            # {
+                        # foreach ($servicename in $project.servicenames)
+                        # {
+                                    # $service = get-wmiobject win32_service -filter "name='$servicename'"
+
+                                    # if ($service)
+                                    # {
+                                                # if ($stopStartServices)
+                                                # {
+
+                                                            # write-verbose "Stopping service $servicename"
+															# $processId = $service.ProcessId
+															# $service.stopservice()
+                                                            # $process = GetProcess $processId                                                   
+															
+                                                            # if($process -and ($process.Id -gt 0)){
+                                                                        # Do{
+                                                                                    # Write-Verbose ($process.Id.ToString() + " (" +  $process.Name +  ") is still running at $(Get-Date)")
+
+                                                                                    # $process = GetProcess $processId
+
+                                                                                    # Start-Sleep 5
+                                                                        # } While ($process -and ($process.Id -eq $processId))
+                                                            # }                                              
+                                                # }
+
+                                                # if ($reinstallServices)
+                                                # {
+                                                            # write-verbose "Uninstalling service $servicename"
+                                                            # $service.delete()
+                                                # }
+                                    # }
+                        # }
+            # }
+
 
 	# Stop app pool
 	$appPoolState = Get-WebAppPoolState $applicationSettings.appPool
@@ -58,7 +109,7 @@ Try
 			Start-Sleep -Seconds 1
 		}
 		
-        Write-Host ("App pool stopped at {0}" -f ([System.DateTime]::UtcNow))
+        	Write-Host ("App pool stopped at {0}" -f ([System.DateTime]::UtcNow))
 	}
 
 
