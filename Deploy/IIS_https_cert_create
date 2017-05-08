@@ -1,0 +1,4 @@
+selfssl.exe /T /N:cn=<hostname> /V:3650
+Get-childItem cert:\LocalMachine\Root\ | Select-String -pattern <hostname>
+winrm delete winrm/config/Listener?Address=*+Transport=HTTPS
+winrm create winrm/config/Listener?Address=*+Transport=HTTPS @{Hostname="<hostname>"; CertificateThumbprint="<Thumbprint>"}
